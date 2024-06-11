@@ -1,5 +1,6 @@
 using EasySockets.Enums;
 using EasySockets.Services.Caching;
+using Microsoft.Extensions.Logging;
 
 namespace EasySockets.Events;
 
@@ -13,7 +14,6 @@ public abstract class EventSocket<TEvent> : EasySocket, IEventSocket
         set => _events = value;
     }
 
-
     public Task SendToClientAsync(string @event, string message)
     {
         return SendToClientAsync(@event, message, CancellationToken.None);
@@ -22,7 +22,12 @@ public abstract class EventSocket<TEvent> : EasySocket, IEventSocket
     public Task SendToClientAsync(string @event, string message, CancellationToken cancellationToken)
     {
         var bound = BindEvent(@event, message);
-        if (bound == null) return Task.CompletedTask;
+        if (bound == null)
+        {
+            if (CanLog(LogLevel.Warning))
+                Logger!.LogWarning("Failed to bind event {Event} with message {Message}", @event, message);
+            return Task.CompletedTask;
+        }
 
         return SendToClientAsync(bound, cancellationToken);
     }
@@ -44,7 +49,13 @@ public abstract class EventSocket<TEvent> : EasySocket, IEventSocket
     public Task Broadcast(BroadCastFilter filter, string @event, string message)
     {
         var bound = BindEvent(@event, message);
-        if (bound == null) return Task.CompletedTask;
+        if (bound == null)
+        {
+            if (CanLog(LogLevel.Warning))
+                Logger!.LogWarning("Failed to bind event {Event} with message {Message}", @event, message);
+
+            return Task.CompletedTask;
+        }
 
         return Broadcast(filter, bound);
     }
@@ -62,7 +73,13 @@ public abstract class EventSocket<TEvent> : EasySocket, IEventSocket
     public Task Broadcast(string @event, string message)
     {
         var bound = BindEvent(@event, message);
-        if (bound == null) return Task.CompletedTask;
+        if (bound == null)
+        {
+            if (CanLog(LogLevel.Warning))
+                Logger!.LogWarning("Failed to bind event {Event} with message {Message}", @event, message);
+
+            return Task.CompletedTask;
+        }
 
         return Broadcast(BroadCastFilter.RoomMembers, bound);
     }
@@ -70,10 +87,19 @@ public abstract class EventSocket<TEvent> : EasySocket, IEventSocket
     public sealed override Task OnMessage(string message)
     {
         var @event = ExtractEvent(message);
-        if (@event is null) return OnFailedEventBinding(message);
+        if (@event is null)
+        {
+            if (CanLog(LogLevel.Warning)) Logger!.LogWarning("Failed to extract event from message {Message}", message);
+            return OnFailedEventBinding(message);
+        }
 
         var eventInfo = _events.FirstOrDefault(e => e.Contains(@event.Event));
-        if (eventInfo is null) return Task.CompletedTask;
+        if (eventInfo is null)
+        {
+            if (CanLog(LogLevel.Warning))
+                Logger!.LogWarning("Failed to find event {Event} in registered events", @event.Event);
+            return Task.CompletedTask;
+        }
 
         return eventInfo.InvokeAsync(this, @event, message);
     }
