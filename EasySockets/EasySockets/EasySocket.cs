@@ -4,6 +4,7 @@ using System.Text;
 using EasySockets.Builder;
 using EasySockets.Enums;
 using EasySockets.Extensions;
+using Microsoft.Extensions.Logging;
 
 namespace EasySockets;
 
@@ -12,21 +13,25 @@ public abstract class EasySocket : IEasySocket
 {
     private readonly SemaphoreSlim _semaphore = new(1, 1);
     private int _bufferCharCount;
-
     private Action<IEasySocket>? _disposeAtSocketHandler;
-
     private Func<IEasySocket, BroadCastFilter, string, Task>? _emit;
+    private Encoder _encoder = null!;
     private bool _isDisposed;
     private bool _isReceiving;
-    private EasySocketOptions _options = null!;
+    private EasySocketOptions? _options;
     private byte[] _sendBuffer = Array.Empty<byte>();
     private WebSocket _webSocket = null!;
-    private Encoder _encoder = null!;
+    internal ILogger<EasySocket>? Logger;
 
     /// <summary>
     ///     The options used to configure the socket.
     /// </summary>
-    protected ReadonlyEasySocketOptions Options => _options.AsReadonly();
+    protected ReadonlyEasySocketOptions Options => _options?.AsReadonly() ?? new ReadonlyEasySocketOptions();
+
+    ILogger<EasySocket> IInternalEasySocket.Logger
+    {
+        set => Logger = value;
+    }
 
     string IInternalEasySocket.RoomId
     {
@@ -58,12 +63,12 @@ public abstract class EasySocket : IEasySocket
 
     public string ClientId { get; private set; } = null!;
 
-    Func<IEasySocket, BroadCastFilter, string, Task>? IInternalEasySocket.Emit
+    Func<IEasySocket, BroadCastFilter, string, Task> IInternalEasySocket.Emit
     {
         set => _emit = value;
     }
 
-    Action<IEasySocket>? IInternalEasySocket.DisposeAtSocketHandler
+    Action<IEasySocket> IInternalEasySocket.DisposeAtSocketHandler
     {
         set => _disposeAtSocketHandler = value;
     }
@@ -101,8 +106,10 @@ public abstract class EasySocket : IEasySocket
                 charsProcessed += charsUsed;
             }
         }
-        catch (WebSocketException)
+        catch (WebSocketException ex)
         {
+            if (CanLog(LogLevel.Error)) Logger!.LogError(ex, "Failed to send message to client.");
+
             await CloseAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -123,13 +130,13 @@ public abstract class EasySocket : IEasySocket
         try
         {
             await _webSocket
-                .CloseAsync(WebSocketCloseStatus.NormalClosure, _options.ClosingStatusDescription, cancellationToken)
+                .CloseAsync(WebSocketCloseStatus.NormalClosure, Options.ClosingStatusDescription, cancellationToken)
                 .ConfigureAwait(false);
             _webSocket.Abort();
         }
-        catch (WebSocketException)
+        catch (WebSocketException ex)
         {
-            // ignored
+            if (CanLog(LogLevel.Error)) Logger!.LogError(ex, "Failed to close the websocket connection.");
         }
 
         Dispose();
@@ -141,7 +148,7 @@ public abstract class EasySocket : IEasySocket
         _isReceiving = true;
 
         StringBuilder sb = new();
-        var buffer = new byte[_options.ReceiveBufferSize];
+        var buffer = new byte[Options.ReceiveBufferSize];
 
         while (IsConnected() && !_isDisposed)
         {
@@ -155,10 +162,11 @@ public abstract class EasySocket : IEasySocket
 
                     if (result.MessageType != WebSocketMessageType.Text) continue;
 
-                    sb.Append(_options.Encoding.GetString(buffer.AsSpan()[..result.Count]));
+                    sb.Append(Options.Encoding.GetString(buffer.AsSpan()[..result.Count]));
                 }
-                catch (WebSocketException)
+                catch (WebSocketException ex)
                 {
+                    if (CanLog(LogLevel.Error)) Logger!.LogError(ex, "Failed to receive message from client.");
                     break;
                 }
 
@@ -204,6 +212,11 @@ public abstract class EasySocket : IEasySocket
         {
             // ignored
         }
+    }
+
+    internal bool CanLog(LogLevel logLevel)
+    {
+        return _options != null && Logger != null && Logger.IsEnabled(logLevel);
     }
 
     /// <summary>
